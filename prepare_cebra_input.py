@@ -12,15 +12,17 @@ Grid:
 """
 
 from pathlib import Path
+import logging
 import numpy as np
 import mne
-import os
-import json
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------
 # 1.  Paths
 # ---------------------------------------------------------------------
-ROOT   = Path(__file__).resolve().parents[1]          # repo root
+ROOT   = Path(__file__).resolve().parents[0]          # repo root
 RAW    = ROOT / "data" / "raw"
 PROC   = ROOT / "data" / "processed"
 PROC.mkdir(parents=True, exist_ok=True)
@@ -28,28 +30,66 @@ PROC.mkdir(parents=True, exist_ok=True)
 # ---------------------------------------------------------------------
 # 2.  Helper functions
 # ---------------------------------------------------------------------
-def load_eeg(edf_path):
-    """Return EEG data as np.ndarray (channels, time)."""
-    raw = mne.io.read_raw_edf(edf_path, preload=True, verbose=False)
-    data = raw.get_data(picks="eeg")
-    return data
+def load_eeg(edf_path: Path, max_samples: int = 1000) -> np.ndarray:
+    """Return EEG data as np.ndarray (channels, time).
 
-def align_lengths(a, b):
-    """Trim the longer array so a and b share the same #samples."""
+    Parameters
+    ----------
+    edf_path   : Path to the EDF file.
+    max_samples: Maximum number of time samples to load (default 1000).
+
+    Returns
+    -------
+    data : (n_channels, max_samples) float32 array.
+
+    Raises
+    ------
+    FileNotFoundError : If the EDF file does not exist.
+    """
+    if not edf_path.exists():
+        raise FileNotFoundError(f"EDF not found: {edf_path}")
+    raw = mne.io.read_raw_edf(str(edf_path), preload=True, verbose=False)
+    data = raw.get_data(picks="eeg").astype(np.float32)
+    return data[:, :max_samples]
+
+
+def generate_mock_ai_states(channels: int, time_steps: int) -> np.ndarray:
+    """Generate synthetic AI internal states (random walk) for Twin Brain.
+
+    Returns
+    -------
+    ai_state : (channels, time_steps) float32 array.
+    """
+    steps = np.random.randn(channels, time_steps) * 0.1
+    return np.cumsum(steps, axis=1).astype(np.float32)
+
+
+def align_lengths(a: np.ndarray, b: np.ndarray):
+    """Trim the longer array so a and b share the same number of samples."""
     T = min(a.shape[1], b.shape[1])
     return a[:, :T], b[:, :T]
 
-def minmax_per_channel(x):
+
+def minmax_per_channel(x: np.ndarray) -> np.ndarray:
     """Scale each channel to [0, 1] independently."""
     xmin = x.min(axis=1, keepdims=True)
     xmax = x.max(axis=1, keepdims=True)
     rng  = np.where((xmax - xmin) == 0, 1, xmax - xmin)
     return (x - xmin) / rng
 
-def save_npy(array, out_path):
+
+def zscore_per_channel(x: np.ndarray) -> np.ndarray:
+    """Z-score each channel independently (zero mean, unit variance)."""
+    mu  = x.mean(axis=1, keepdims=True)
+    std = x.std(axis=1, keepdims=True)
+    std = np.where(std == 0, 1.0, std)
+    return (x - mu) / std
+
+
+def save_npy(array: np.ndarray, out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     np.save(out_path, array)
-    print(f"✓ Saved {out_path.name:45}  {array.shape}")
+    logger.info("✓ Saved %-45s  %s", out_path.name, array.shape)
 
 # ---------------------------------------------------------------------
 # 3.  Grid definition
@@ -93,30 +133,59 @@ GRID = [
         ("stacked/nt9_cut_speak_listen_stacked.edf",
          "stacked/nt10_cut_listen_speak_stacked.edf"),
     ),
+    (
+        "cut_60",
+        "patient-ai",
+        ("individual/nt9_speak_cut_60_components_preprocessed.edf",
+         "AI_MOCK"),
+    ),
 ]
 
 # ---------------------------------------------------------------------
 # 4.  Main loop
 # ---------------------------------------------------------------------
-for clean, pairing, (edf_a_rel, edf_b_rel) in GRID:
-    edf_a = RAW / clean / edf_a_rel
-    edf_b = RAW / clean / edf_b_rel
 
-    # ---------- load ----------
-    A = load_eeg(edf_a)   # (ch, t)
-    B = load_eeg(edf_b)
+def main() -> None:
+    for clean, pairing, (edf_a_rel, edf_b_rel) in GRID:
+        edf_a = RAW / clean / edf_a_rel
+        edf_b = RAW / clean / edf_b_rel
 
-    # ---------- align ----------
-    A, B = align_lengths(A, B)            # ensure equal length T
-    combined = np.vstack([A, B])          # (ch_A+ch_B, T)
+        # ---------- load ----------
+        try:
+            A = load_eeg(edf_a)
+        except FileNotFoundError as exc:
+            logger.warning("Skipping %s/%s: %s", clean, pairing, exc)
+            continue
 
-    # ---------- save raw ----------
-    out_raw = PROC / clean / "raw" / f"{pairing}.npy"
-    save_npy(combined, out_raw)
+        if str(edf_b_rel) == "AI_MOCK":
+            B = generate_mock_ai_states(A.shape[0], A.shape[1])
+        else:
+            try:
+                B = load_eeg(edf_b)
+            except FileNotFoundError as exc:
+                logger.warning("Skipping %s/%s: %s", clean, pairing, exc)
+                continue
 
-    # ---------- save normalized ----------
-    combined_norm = minmax_per_channel(combined)
-    out_norm = PROC / clean / "normalized" / f"{pairing}.npy"
-    save_npy(combined_norm, out_norm)
+        # ---------- align ----------
+        A, B = align_lengths(A, B)            # ensure equal length T
+        combined = np.vstack([A, B])          # (ch_A+ch_B, T)
 
-print("\nAll NumPy files generated")
+        # ---------- save raw ----------
+        out_raw = PROC / clean / "raw" / f"{pairing}.npy"
+        save_npy(combined, out_raw)
+
+        # ---------- save normalized ----------
+        combined_norm = minmax_per_channel(combined)
+        out_norm = PROC / clean / "normalized" / f"{pairing}.npy"
+        save_npy(combined_norm, out_norm)
+
+        # ---------- save z-scored ----------
+        combined_z = zscore_per_channel(combined)
+        out_z = PROC / clean / "zscored" / f"{pairing}.npy"
+        save_npy(combined_z, out_z)
+
+    logger.info("\nAll NumPy files generated.")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Saro BCI – Neural Twin Live Monitor</title>
+  <meta name="description" content="Real-time EEG and AI Twin neural monitoring dashboard powered by WebGL and Mamba SSM." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- ── Header ──────────────────────────────────────────────────────── -->
+  <header class="header">
+    <div class="header-brand">
+      <div class="logo-pulse"></div>
+      <span class="header-title">SARO BCI</span>
+      <span class="header-subtitle">Neural Twin Diagnostics</span>
+    </div>
+    <div class="header-status">
+      <div class="status-chip" id="connection-badge">
+        <span class="status-dot" id="status-dot"></span>
+        <span id="status-text">Connecting…</span>
+      </div>
+      <div class="status-chip secondary" id="engine-badge">
+        <span id="engine-mode">—</span>
+      </div>
+      <div class="status-chip secondary">
+        <span id="client-count">0</span> clients
+      </div>
+      <button class="btn-mute" id="btn-mute" onclick="toggleMute()" title="Toggle alert sound">
+        🔔 Sound
+      </button>
+    </div>
+  </header>
+
+  <!-- ── Seizure Alert Banner ─────────────────────────────────────────── -->
+  <div class="alert-banner" id="alert-banner">
+    <div class="alert-icon">⚡</div>
+    <div class="alert-text">
+      <span class="alert-severity" id="alert-severity">CRITICAL</span>
+      <span id="alert-message">High-Precision Manifold Divergence Detected</span>
+    </div>
+    <div class="alert-zone" id="alert-zone">Left Temporal Lobe</div>
+    <button class="alert-dismiss" onclick="dismissAlert()">✕</button>
+  </div>
+
+  <!-- ── Metric Cards ──────────────────────────────────────────────────── -->
+  <section class="metrics-row">
+    <div class="metric-card" id="card-anomaly">
+      <div class="metric-label">Anomaly Score</div>
+      <div class="metric-value" id="anomaly-score">—</div>
+      <div class="metric-bar-track"><div class="metric-bar" id="anomaly-bar"></div></div>
+    </div>
+    <div class="metric-card" id="card-divergence">
+      <div class="metric-label">Topological Divergence</div>
+      <div class="metric-value" id="divergence-score">—</div>
+      <div class="metric-bar-track"><div class="metric-bar divergence-bar" id="divergence-bar"></div></div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Inference Latency</div>
+      <div class="metric-value" id="latency-ms">—</div>
+      <div class="metric-sub" id="engine-label">Mode: —</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Buffer Fill</div>
+      <div class="metric-value" id="buffer-fill">—</div>
+      <div class="metric-bar-track"><div class="metric-bar buffer-bar" id="buffer-bar"></div></div>
+    </div>
+    <div class="metric-card alert-count-card">
+      <div class="metric-label">Alerts (session)</div>
+      <div class="metric-value alert-count-value" id="alert-count">0</div>
+      <div class="metric-sub" id="last-alert-time">No alerts yet</div>
+    </div>
+  </section>
+
+  <!-- ── Main Panels ───────────────────────────────────────────────────── -->
+  <main class="main-grid">
+    <!-- Live EEG Canvas (WebGL) -->
+    <section class="panel" id="panel-eeg">
+      <div class="panel-header">
+        <h2 class="panel-title">Live Patient EEG</h2>
+        <div class="panel-controls">
+          <label class="ctrl-label">Channels</label>
+          <input type="range" id="ch-slider" min="1" max="10" value="5" step="1"
+                 oninput="document.getElementById('ch-count').textContent = this.value + ' ch'" />
+          <span id="ch-count" class="ctrl-value">5 ch</span>
+          <label class="ctrl-label" style="margin-left:12px">Gain</label>
+          <input type="range" id="gain-slider" min="1" max="20" value="8" step="1"
+                 oninput="document.getElementById('gain-val').textContent = this.value + 'x'" />
+          <span id="gain-val" class="ctrl-value">8x</span>
+          <button class="btn-pause" id="btn-pause" onclick="togglePause()" title="Space to pause">
+            ⏸ Pause
+          </button>
+        </div>
+      </div>
+      <canvas id="eeg-canvas" class="gl-canvas"></canvas>
+      <!-- Frequency Band Power Strip -->
+      <div class="band-strip" id="band-strip">
+        <div class="band-cell" id="band-delta">
+          <span class="band-label">δ Delta</span>
+          <div class="band-bar-track"><div class="band-bar" id="bar-delta"></div></div>
+          <span class="band-hz">0.5–4 Hz</span>
+        </div>
+        <div class="band-cell" id="band-theta">
+          <span class="band-label">θ Theta</span>
+          <div class="band-bar-track"><div class="band-bar" id="bar-theta"></div></div>
+          <span class="band-hz">4–8 Hz</span>
+        </div>
+        <div class="band-cell" id="band-alpha">
+          <span class="band-label">α Alpha</span>
+          <div class="band-bar-track"><div class="band-bar" id="bar-alpha"></div></div>
+          <span class="band-hz">8–13 Hz</span>
+        </div>
+        <div class="band-cell" id="band-beta">
+          <span class="band-label">β Beta</span>
+          <div class="band-bar-track"><div class="band-bar" id="bar-beta"></div></div>
+          <span class="band-hz">13–30 Hz</span>
+        </div>
+        <div class="band-cell" id="band-gamma">
+          <span class="band-label">γ Gamma</span>
+          <div class="band-bar-track"><div class="band-bar" id="bar-gamma"></div></div>
+          <span class="band-hz">30–80 Hz</span>
+        </div>
+      </div>
+      <div class="channel-labels" id="ch-labels"></div>
+    </section>
+
+    <!-- Seizure Probability Timeline -->
+    <section class="panel" id="panel-timeline">
+      <div class="panel-header">
+        <h2 class="panel-title">Seizure Probability – 60s Rolling</h2>
+        <span class="threshold-label">Threshold: 0.90</span>
+      </div>
+      <canvas id="timeline-canvas" class="gl-canvas"></canvas>
+    </section>
+
+    <!-- 3D Brain Map -->
+    <section class="panel" id="panel-brain3d">
+      <div class="panel-header">
+        <h2 class="panel-title">Live Topography (128-ch)</h2>
+      </div>
+      <div id="brain-container" style="width: 100%; height: 100%; min-height: 300px; position: relative;"></div>
+    </section>
+
+    <!-- Alert Log -->
+    <section class="panel" id="panel-alerts">
+      <div class="panel-header">
+        <h2 class="panel-title">Alert Log</h2>
+        <button class="btn-clear" onclick="clearAlerts()">Clear</button>
+      </div>
+      <div class="alert-log" id="alert-log">
+        <div class="alert-log-empty">No alerts yet — system is monitoring.</div>
+      </div>
+    </section>
+
+    <!-- System Status -->
+    <section class="panel" id="panel-system">
+      <div class="panel-header">
+        <h2 class="panel-title">System Status</h2>
+      </div>
+      <div class="system-grid">
+        <div class="sys-row"><span class="sys-key">Data Source</span><span class="sys-val" id="sys-source">—</span></div>
+        <div class="sys-row"><span class="sys-key">Sampling Rate</span><span class="sys-val" id="sys-sfreq">—</span></div>
+        <div class="sys-row"><span class="sys-key">Channels</span><span class="sys-val" id="sys-channels">—</span></div>
+        <div class="sys-row"><span class="sys-key">Filter</span><span class="sys-val">1–50 Hz + 50 Hz notch</span></div>
+        <div class="sys-row"><span class="sys-key">AI Model</span><span class="sys-val" id="sys-model">EEGMamba SSM</span></div>
+        <div class="sys-row"><span class="sys-key">Uptime</span><span class="sys-val" id="sys-uptime">—</span></div>
+        <div class="sys-row"><span class="sys-key">Frames recv.</span><span class="sys-val" id="sys-frames">0</span></div>
+        <div class="sys-row" id="row-warmup">
+          <span class="sys-key">TDA Warmup</span>
+          <span class="sys-val warmup-val" id="sys-warmup">Collecting baseline…</span>
+        </div>
+      </div>
+      <div class="kbd-hint">⌨ Space: pause &nbsp;|&nbsp; R: reset 3D &nbsp;|&nbsp; C: clear alerts</div>
+    </section>
+  </main>
+
+  <!-- ── Footer ───────────────────────────────────────────────────────── -->
+  <footer class="footer">
+    Saro BCI Neural Twin &nbsp;•&nbsp; Phase 4 – 128-ch Neural Twin &nbsp;•&nbsp;
+    <span id="footer-time">—</span>
+  </footer>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="brain_3d.js"></script>
+  <script src="eeg_renderer.js"></script>
+  <script src="dashboard.js"></script>
+</body>
+</html>

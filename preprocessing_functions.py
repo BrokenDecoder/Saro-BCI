@@ -2,14 +2,18 @@ import mne
 from mne.preprocessing import ICA
 from mne.channels import read_custom_montage
 from pyprep.find_noisy_channels import NoisyChannels
+import logging
 import os
 import json
 from datetime import datetime
+from pathlib import Path
 
-def convert_to_gsn_hydrocel_names(raw):
+logger = logging.getLogger(__name__)
+
+def convert_to_gsn_hydrocel_names(raw: mne.io.BaseRaw) -> mne.io.BaseRaw:
     """
     Rename EEG channels from 'EEG X' format to 'EX' (GSN-HydroCel).
-    VREF is renamed to 'Cz'.
+    'EEG VREF' is renamed to 'Cz'.
     """
     mapping = {}
     for ch in raw.ch_names:
@@ -19,21 +23,42 @@ def convert_to_gsn_hydrocel_names(raw):
             try:
                 num = int(ch.split(' ')[1])
                 mapping[ch] = f"E{num}"
-            except:
-                print(f"Skipping unrecognized channel: {ch}")
+            except ValueError:
+                logger.warning("Skipping unrecognised channel: %s", ch)
     raw.rename_channels(mapping)
     return raw
 
-def preprocess_eeg(path_to_set_file, montage_path='GSN-HydroCel-65_1.0.sfp', output_dir='preprocessed_eeg/'): 
+def preprocess_eeg(
+    path_to_set_file: str,
+    montage_path: str = 'GSN-HydroCel-65_1.0.sfp',
+    output_dir: str = 'preprocessed_eeg/',
+    l_freq: float = 1.0,
+    h_freq: float = 40.0,
+    notch_freq: float = 50.0,
+    n_ica_components: int = 15,
+    auto_exclude_eog: bool = False,
+) -> str:
     """
     Preprocess EEG data from a .set file and save as .edf after ICA.
 
-    Parameters:
-    - path_to_set_file: str - path to the EEGLAB .set file
-    - montage_path: str - path to the montage .sfp file
-    - output_dir: str - directory where the output EDF file will be saved
+    Parameters
+    ----------
+    path_to_set_file  : Path to the EEGLAB .set file.
+    montage_path      : Path to the montage .sfp file.
+    output_dir        : Directory where the output EDF file will be saved.
+    l_freq            : High-pass filter cut-off in Hz (default 1.0).
+    h_freq            : Low-pass filter cut-off in Hz (default 40.0).
+    notch_freq        : Notch filter frequency for mains noise (default 50 Hz).
+    n_ica_components  : Number of ICA components to fit (default 15).
+    auto_exclude_eog  : If True, use MNE's EOG auto-detection instead of
+                        prompting the user interactively (default False).
+
+    Returns
+    -------
+    output_path : str – path to the saved pre-processed EDF file.
     """
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Initialize log dictionary
     processing_log = {
@@ -42,7 +67,9 @@ def preprocess_eeg(path_to_set_file, montage_path='GSN-HydroCel-65_1.0.sfp', out
         'processing_steps': []
     }
 
+    # ------------------------------------------------------------------ #
     # Load data
+    # ------------------------------------------------------------------ #
     raw = mne.io.read_raw_eeglab(path_to_set_file, preload=True)
     processing_log['processing_steps'].append({
         'step': 'load_data',
@@ -51,7 +78,9 @@ def preprocess_eeg(path_to_set_file, montage_path='GSN-HydroCel-65_1.0.sfp', out
         'duration_seconds': raw.times[-1]
     })
 
+    # ------------------------------------------------------------------ #
     # Rename channels and set montage
+    # ------------------------------------------------------------------ #
     raw = convert_to_gsn_hydrocel_names(raw)
     montage = read_custom_montage(montage_path)
     raw.set_montage(montage)
@@ -61,12 +90,15 @@ def preprocess_eeg(path_to_set_file, montage_path='GSN-HydroCel-65_1.0.sfp', out
         'montage_channels': montage.ch_names
     })
 
-    # High-pass filter
-    raw.filter(l_freq=1.0, h_freq=None)
+    # ------------------------------------------------------------------ #
+    # Bandpass + notch filter
+    # ------------------------------------------------------------------ #
+    raw.filter(l_freq=l_freq, h_freq=h_freq, method='fir', fir_window='hamming')
+    raw.notch_filter(freqs=notch_freq)
     processing_log['processing_steps'].append({
-        'step': 'highpass_filter',
-        'description': 'Applied 1.0 Hz high-pass filter',
-        'filter_settings': {'l_freq': 1.0, 'h_freq': None}
+        'step': 'bandpass_notch_filter',
+        'description': f'Applied {l_freq}–{h_freq} Hz bandpass + {notch_freq} Hz notch filter',
+        'filter_settings': {'l_freq': l_freq, 'h_freq': h_freq, 'notch_freq': notch_freq}
     })
 
     # Automatic bad channel detection using pyprep
@@ -108,40 +140,46 @@ def preprocess_eeg(path_to_set_file, montage_path='GSN-HydroCel-65_1.0.sfp', out
         'interpolated_channels': all_bads
     })
 
-    # Run ICA
-    ica = ICA(n_components=15, random_state=97, max_iter='auto')
+    # ------------------------------------------------------------------ #
+    # ICA
+    # ------------------------------------------------------------------ #
+    ica = ICA(n_components=n_ica_components, random_state=97, max_iter='auto')
     ica.fit(raw)
     processing_log['processing_steps'].append({
         'step': 'ica_fit',
         'description': 'Fitted ICA components',
         'ica_settings': {
-            'n_components': 15,
+            'n_components': n_ica_components,
             'random_state': 97,
             'max_iter': 'auto'
         }
     })
 
-    # Plot ICA components
-    print("Plotting ICA components for visual inspection...")
-    ica_plot = ica.plot_components(show=True)  # Set show=False to prevent blocking
-    processing_log['processing_steps'].append({
-        'step': 'ica_plot',
-        'description': 'Displayed ICA components for visual inspection',
-        'n_components_plotted': 15
-    })
+    # Component selection: auto (EOG) or interactive
+    if auto_exclude_eog:
+        eog_indices, _ = ica.find_bads_eog(raw)
+        ica.exclude = eog_indices
+        logger.info("Auto-excluded %d EOG components: %s", len(eog_indices), eog_indices)
+        to_exclude = eog_indices
+    else:
+        logger.info("Plotting ICA components for visual inspection...")
+        ica.plot_components(show=True)
+        raw_input = input("Enter ICA component numbers to exclude (comma-separated, or blank to skip): ")
+        to_exclude = [
+            int(i.strip()) for i in raw_input.split(',') if i.strip().isdigit()
+        ]
+        ica.exclude = to_exclude
 
-    # Ask user for components to exclude
-    to_exclude = input("Enter ICA component numbers to exclude (comma-separated): ")
-    to_exclude = [int(i.strip()) for i in to_exclude.split(',') if i.strip().isdigit()]
-    ica.exclude = to_exclude
     processing_log['processing_steps'].append({
         'step': 'ica_component_selection',
-        'description': 'User-selected ICA components to exclude',
+        'description': 'EOG auto-detection' if auto_exclude_eog else 'User-selected ICA components',
         'excluded_components': to_exclude,
         'n_components_excluded': len(to_exclude)
     })
 
+    # ------------------------------------------------------------------ #
     # Apply ICA
+    # ------------------------------------------------------------------ #
     raw = ica.apply(raw.copy())
     processing_log['processing_steps'].append({
         'step': 'ica_apply',
@@ -149,16 +187,18 @@ def preprocess_eeg(path_to_set_file, montage_path='GSN-HydroCel-65_1.0.sfp', out
         'n_components_removed': len(to_exclude)
     })
 
+    # ------------------------------------------------------------------ #
     # Save output
-    base = os.path.splitext(os.path.basename(path_to_set_file))[0]
-    output_path = os.path.join(output_dir, f"{base}_preprocessed.edf")
-    mne.export.export_raw(output_path, raw, fmt='edf', overwrite=True)
-    
-    # Save processing log
-    log_path = os.path.join(output_dir, f"{base}_processing_log.json")
+    # ------------------------------------------------------------------ #
+    base = Path(path_to_set_file).stem
+    output_path = output_dir / f"{base}_preprocessed.edf"
+    log_path    = output_dir / f"{base}_processing_log.json"
+
+    mne.export.export_raw(str(output_path), raw, fmt='edf', overwrite=True)
+
     with open(log_path, 'w') as f:
         json.dump(processing_log, f, indent=4)
-    
-    print(f"Preprocessed file saved to: {output_path}")
-    print(f"Processing log saved to: {log_path}")
-    return output_path
+
+    logger.info("Preprocessed file saved to: %s", output_path)
+    logger.info("Processing log saved to:    %s", log_path)
+    return str(output_path)

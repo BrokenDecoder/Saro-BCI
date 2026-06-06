@@ -1,0 +1,10 @@
+*.npy
+*.pt
+*.pth
+*.edf
+__pycache__/
+.env
+data/
+models/
+results/
+pretrained_weights/

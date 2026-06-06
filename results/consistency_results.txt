@@ -1,0 +1,2 @@
+spk9-lst10                 consistency=0.9833  variability=0.0167
+lst9-spk10                 consistency=1.0000  variability=0.0000

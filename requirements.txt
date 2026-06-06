@@ -1,0 +1,29 @@
+# Saro BCI — Python dependencies
+# Pin major versions to avoid silent breakage on future pip installs
+
+# Signal processing + EEG
+mne>=1.6,<2.0
+scipy>=1.12,<2.0
+numpy>=1.26,<2.0
+PyWavelets>=1.5,<2.0
+
+# AI / ML
+torch>=2.2,<3.0
+onnxruntime>=1.17,<2.0   # hard dependency of inference_engine.py
+mamba-ssm>=2.0           # optional: falls back to stub if absent
+causal-conv1d>=1.2        # required by mamba-ssm
+einops>=0.7
+
+# Topology / embedding
+cebra>=0.4               # optional: falls back to PCA stub
+giotto-tda>=0.6          # optional: falls back to approx Wasserstein
+
+# WebSocket backend
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.27,<1.0
+msgpack>=1.0,<2.0
+websockets>=12.0,<14.0
+httpx>=0.26,<1.0
+python-multipart>=0.0.9
+
+# NOTE: dash and plotly removed — replaced by the WebGL dashboard
